@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Luminary — Sign In</title>
+<link rel="stylesheet" href="style.css">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<script src="firebase_client_config.js"></script>
+
+<!-- Ambient background -->
+<div class="blob b1"></div>
+<div class="blob b2"></div>
+<div class="blob b3"></div>
+<div class="toast" id="toast"></div>
+
+<!-- ══ MAIN PANEL ══ -->
+<div class="wrap">
+<div class="panel">
+
+  <div class="logo">
+    <div class="logo-gem">✦</div>
+    <span class="logo-name">Luminary</span>
+  </div>
+
+  <!-- TABS -->
+  <div class="tabs">
+    <button class="tab active" id="tabLogin"  onclick="switchTab('login')">Sign In</button>
+    <button class="tab"        id="tabCreate" onclick="switchTab('register')">Create One</button>
+  </div>
+
+  <!-- ── LOGIN FORM ── -->
+  <div id="loginForm">
+    <div class="field">
+      <label>Email Address</label>
+      <div class="inp-wrap">
+        <input type="email" id="lEmail" placeholder="you@example.com" autocomplete="email">
+        <span class="inp-ico">✉</span>
+      </div>
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <div class="inp-wrap">
+        <input type="password" id="lPass" placeholder="••••••••" autocomplete="current-password">
+        <span class="inp-ico">🔒</span>
+        <button class="eye" onclick="toggleEye('lPass',this)" type="button">👁</button>
+      </div>
+    </div>
+    <button class="btn-primary" onclick="doLogin()">Sign In →</button>
+    <div class="divider">or</div>
+    <button class="btn-google" onclick="doGoogle()">
+      <svg class="g-ico" viewBox="0 0 48 48" fill="none">
+        <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+        <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+        <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+        <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.29-8.16 2.29-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+      </svg>
+      Continue with Google
+    </button>
+    <button class="btn-forgot" onclick="openForgot()" type="button">
+      Forgot password? <span>Recover via biometrics</span>
+    </button>
+  </div><!-- #loginForm -->
+
+  <!-- ── REGISTER FORM ── -->
+  <div id="registerForm" style="display:none">
+    <div class="prog-bar"><div class="prog-fill" id="regProg" style="width:0%"></div></div>
+
+    <div class="field">
+      <label>Full Name</label>
+      <div class="inp-wrap">
+        <input type="text" id="rName" placeholder="John Doe" oninput="updateProg()">
+        <span class="inp-ico">👤</span>
+      </div>
+    </div>
+    <div class="field">
+      <label>Email Address</label>
+      <div class="inp-wrap">
+        <input type="email" id="rEmail" placeholder="you@example.com" oninput="updateProg()">
+        <span class="inp-ico">✉</span>
+      </div>
+    </div>
+    <div class="field">
+      <label>Mobile Number</label>
+      <div class="inp-wrap">
+        <input type="tel" id="rMobile" placeholder="+91 98765 43210" oninput="updateProg()">
+        <span class="inp-ico">📱</span>
+      </div>
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <div class="inp-wrap">
+        <input type="password" id="rPass" placeholder="Min. 8 characters" oninput="updateProg()">
+        <span class="inp-ico">🔒</span>
+        <button class="eye" onclick="toggleEye('rPass',this)" type="button">👁</button>
+      </div>
+    </div>
+
+    <!-- Face register strip -->
+    <div class="feature-strip" onclick="openFaceReg()">
+      <span class="fs-icon">🧿</span>
+      <div class="fs-text">
+        <div class="fs-title">Register Face ID</div>
+        <div class="fs-hint">Used for login &amp; password recovery</div>
+      </div>
+      <span class="badge" id="faceBadge">Optional</span>
+    </div>
+
+    <!-- Biometric register strip -->
+    <div class="feature-strip bio" onclick="openBioReg()">
+      <span class="fs-icon">👆</span>
+      <div class="fs-text">
+        <div class="fs-title">Register Biometric</div>
+        <div class="fs-hint">Fingerprint / device authenticator</div>
+      </div>
+      <span class="badge" id="bioBadge">Optional</span>
+    </div>
+
+    <button class="btn-primary" onclick="doRegister()">Create Account →</button>
+  </div><!-- #registerForm -->
+
+</div><!-- .panel -->
+</div><!-- .wrap -->
+
+<!-- ══ MODAL ══ -->
+<div class="overlay" id="modal">
+<div class="modal">
+  <button class="m-close" onclick="closeModal()" type="button">×</button>
+
+  <!-- Screen 1 — Choose method -->
+  <div class="vscreen on" id="sChoose">
+    <h2>Recover Access</h2>
+    <p>Choose how to verify your identity to reset your password.</p>
+    <div class="m-grid">
+      <div class="m-card" onclick="goVerify('face')">
+        <div class="m-icon face">🧿</div>
+        <div class="m-lbl">Face ID</div>
+        <div class="m-sub">OpenCV camera scan</div>
+      </div>
+      <div class="m-card" onclick="goVerify('bio')">
+        <div class="m-icon bio">👆</div>
+        <div class="m-lbl">Fingerprint</div>
+        <div class="m-sub">Device biometric</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 2a — Face -->
+  <div class="vscreen" id="sFace">
+    <h2 id="faceTitle">Face Verification</h2>
+    <p id="faceDesc">Position your face in the frame. The OpenCV backend will detect and verify you.</p>
+    <div class="cam-box" id="camBox">
+      <img class="stream" id="streamImg" alt="Camera stream">
+      <div class="scan-bar"></div>
+      <div class="cam-placeholder">
+        <div class="face-ring">👤</div>
+        <span class="cam-hint">Tap "Start Camera" to begin</span>
+      </div>
+    </div>
+    <p class="vhint">Ensure good <strong>lighting</strong>. Look directly at the camera.</p>
+    <button class="btn-verify" id="camBtn" onclick="handleCamBtn()" type="button">Start Camera</button>
+    <div class="status" id="faceStatus"></div>
+    <button class="btn-back" onclick="backToChoose()" type="button">← Choose another method</button>
+  </div>
+
+  <!-- Screen 2b — Biometric -->
+  <div class="vscreen" id="sBio">
+    <h2 id="bioTitle">Biometric Auth</h2>
+    <p id="bioDesc">Place your registered finger on the sensor to verify.</p>
+    <div class="fp-wrap">
+      <svg class="fp-svg" viewBox="0 0 130 130" fill="none">
+        <ellipse class="fp-ring" cx="65" cy="65" rx="58" ry="60" stroke="#22d3ee" stroke-width="1.8" stroke-dasharray="8 5"/>
+        <ellipse class="fp-ring" cx="65" cy="65" rx="47" ry="49" stroke="#22d3ee" stroke-width="1.8" stroke-dasharray="6 5"/>
+        <ellipse class="fp-ring" cx="65" cy="65" rx="36" ry="38" stroke="#6366f1" stroke-width="1.8" stroke-dasharray="5 5"/>
+        <ellipse class="fp-ring" cx="65" cy="65" rx="25" ry="27" stroke="#6366f1" stroke-width="1.8" stroke-dasharray="4 5"/>
+        <ellipse class="fp-ring" cx="65" cy="65" rx="14" ry="15" stroke="#a5b4fc" stroke-width="1.8"/>
+        <circle cx="65" cy="65" r="5" fill="#22d3ee" opacity=".85"/>
+      </svg>
+    </div>
+    <p class="vhint">Biometric data is <strong>never stored</strong> on servers — only a secure credential ID goes to Firebase.</p>
+    <button class="btn-verify" onclick="handleBio()" type="button">Verify Fingerprint</button>
+    <div class="status" id="bioStatus"></div>
+    <button class="btn-back" onclick="backToChoose()" type="button">← Choose another method</button>
+  </div>
+
+  <!-- Screen 3 — Success -->
+  <div class="vscreen" id="sSuccess">
+    <div class="success-screen">
+      <div class="big-emoji">✅</div>
+      <h2>Verified!</h2>
+      <p id="successMsg">Identity confirmed. You can now set a new password.</p>
+      <button class="btn-verify" style="margin-top:16px" onclick="closeModal()" type="button">Continue →</button>
+    </div>
+  </div>
+
+</div><!-- .modal -->
+</div><!-- .overlay -->
+
+<script src="auth.js"></script>
+</body>
+</html>
