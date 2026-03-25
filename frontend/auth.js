@@ -12,7 +12,14 @@ let backendConnected = false;
 // Check backend connectivity on page load
 async function checkBackendConnection() {
   try {
-    const res = await fetch("http://localhost:5000/api/ping", { timeout: 3000 });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    
+    const res = await fetch("http://localhost:5000/api/ping", { 
+      signal: controller.signal 
+    });
+    clearTimeout(timeoutId);
+    
     if (res.ok) {
       const data = await res.json();
       backendConnected = data.ok === true;
@@ -27,6 +34,28 @@ async function checkBackendConnection() {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
+  // Check if running from web server (required for API calls)
+  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  
+  if (!isLocalhost) {
+    const banner = document.createElement("div");
+    banner.style.cssText = `
+      position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+      background: linear-gradient(135deg, #dc2626, #f87171);
+      color: white; padding: 16px 20px; text-align: center;
+      font-weight: 500; font-size: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    `;
+    banner.innerHTML = `
+      ⚠️ <strong>Frontend must be served from web server.</strong> 
+      Run <code style="background:rgba(0,0,0,0.2); padding:4px 8px; border-radius:4px;">START.bat</code> 
+      or <code style="background:rgba(0,0,0,0.2); padding:4px 8px; border-radius:4px;">python -m http.server 8000</code> 
+      then visit <code style="background:rgba(0,0,0,0.2); padding:4px 8px; border-radius:4px;">http://localhost:8000/frontend/</code>
+    `;
+    document.body.insertBefore(banner, document.body.firstChild);
+    document.body.style.paddingTop = "60px";
+    return;
+  }
+  
   const { connected, data } = await checkBackendConnection();
   
   if (!connected) {
@@ -47,6 +76,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   } else if (data && !data.face_recognition) {
     // Backend running but face recognition not available (that's OK)
     console.log("✅ Backend running in mock mode (face recognition not available)");
+  } else {
+    console.log("✅ Backend connected successfully");
   }
 });
 
