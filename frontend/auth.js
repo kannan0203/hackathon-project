@@ -122,10 +122,19 @@ async function apiPost(path, body) {
     });
     
     if (!res.ok) {
-      console.error(`API Error: ${res.status}`, await res.text());
+      let errorMsg = `Server error (HTTP ${res.status})`;
+      try {
+        const errorData = await res.json();
+        if (errorData.error) {
+          errorMsg = errorData.error;
+        }
+      } catch (e) {
+        // If we can't parse the error response, use the generic message
+      }
+      console.error(`API Error: ${res.status}`, errorMsg);
       return { 
         ok: false, 
-        error: `Server error (HTTP ${res.status})` 
+        error: errorMsg
       };
     }
     
