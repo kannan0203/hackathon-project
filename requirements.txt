@@ -6,3 +6,4 @@ dlib
 firebase-admin
 numpy
 Pillow
+gunicorn
