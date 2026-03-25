@@ -2,6 +2,7 @@ flask
 flask-cors
 opencv-python
 face-recognition
+dlib
 firebase-admin
 numpy
 Pillow

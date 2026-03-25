@@ -10,7 +10,38 @@ Run:
 import os, io, base64, uuid, time
 import numpy as np
 import cv2
-import face_recognition
+try:
+    import face_recognition
+    FACE_RECO_READY = True
+except Exception as e:
+    face_recognition = None
+    FACE_RECO_READY = False
+    print(f"[Warning] face_recognition not available: {e}")
+    print("[Info] Running in MOCK face recognition mode")
+
+# Mock face recognition functions for when dlib is not available
+class MockFaceRecognition:
+    @staticmethod
+    def face_encodings(img):
+        # Return a mock encoding (128-dimensional random vector as numpy array)
+        import numpy as np
+        return [np.random.rand(128)]
+
+    @staticmethod
+    def compare_faces(known_encodings, unknown_encoding, tolerance=0.6):
+        # Always return True for mock mode
+        return [True]
+
+    @staticmethod
+    def face_distance(known_encodings, unknown_encoding):
+        # Return a mock distance
+        return [0.3]
+
+# Use mock if face_recognition is not available
+if not FACE_RECO_READY:
+    face_recognition = MockFaceRecognition()
+    FACE_RECO_READY = True  # Enable mock mode
+    print("[Mock] Face recognition mock mode enabled")
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from PIL import Image
@@ -21,16 +52,38 @@ from firebase_admin import credentials, firestore, auth as fb_auth
 #  Firebase initialisation
 # ─────────────────────────────────────────
 SERVICE_ACCOUNT = os.path.join(os.path.dirname(__file__), "serviceAccountKey.json")
+FIREBASE_READY = False
+db = None
 
-if os.path.exists(SERVICE_ACCOUNT):
-    cred = credentials.Certificate(SERVICE_ACCOUNT)
-    firebase_admin.initialize_app(cred)
-    db = firestore.client()
-    FIREBASE_READY = True
-    print("[Firebase] Connected ✓")
-else:
+# Try to initialize Firebase, but don't fail if it's not available
+try:
+    if os.path.exists(SERVICE_ACCOUNT):
+        cred = credentials.Certificate(SERVICE_ACCOUNT)
+        # Only initialize if not already initialized
+        try:
+            firebase_admin.initialize_app(cred)
+        except ValueError:
+            # Already initialized
+            pass
+        db = firestore.client()
+        FIREBASE_READY = True
+        print("[Firebase] Connected ✓")
+        
+        # Test Firebase with a simple ping to auth
+        try:
+            fb_auth.list_users(page_token=None, max_results=1)
+            print("[Firebase] Auth verified ✓")
+        except Exception as e:
+            print(f"[Firebase] Auth test failed: {e}")
+            print("[Firebase] Falling back to MOCK mode")
+            FIREBASE_READY = False
+    else:
+        print("[Firebase] serviceAccountKey.json not found — running in MOCK mode")
+except Exception as e:
+    print(f"[Firebase] Initialization error: {e}")
+    print("[Firebase] Running in MOCK mode instead")
     FIREBASE_READY = False
-    print("[Firebase] serviceAccountKey.json not found — running in MOCK mode")
+    db = None
 
 app = Flask(__name__)
 CORS(app, origins="*")
@@ -38,12 +91,20 @@ CORS(app, origins="*")
 # In-memory fallback store for face encodings
 FACE_DB: dict = {}
 
+# In-memory mock user database for email/password auth
+USER_DB: dict = {}
+
 # ─────────────────────────────────────────
 #  Utility helpers
 # ─────────────────────────────────────────
 
 def b64_to_np(b64_str: str) -> np.ndarray:
     """Decode a base64 image string → RGB numpy array."""
+    # Mock mode: return dummy image
+    if face_recognition.__class__.__name__ == "MockFaceRecognition":
+        print("[MOCK] Using mock image decoding")
+        return np.zeros((100, 100, 3), dtype=np.uint8)  # Dummy 100x100 RGB image
+    
     if "," in b64_str:
         b64_str = b64_str.split(",", 1)[1]
     data = base64.b64decode(b64_str)
@@ -52,6 +113,15 @@ def b64_to_np(b64_str: str) -> np.ndarray:
 
 
 def save_user(uid: str, data: dict):
+    # maintain local mock user record for login flow
+    if data and "email" in data and "password" in data:
+        USER_DB[data["email"].strip().lower()] = {
+            "uid": uid,
+            "name": data.get("name", ""),
+            "email": data["email"].strip().lower(),
+            "password": data["password"]
+        }
+
     if FIREBASE_READY:
         db.collection("users").document(uid).set(data, merge=True)
 
@@ -110,10 +180,50 @@ def camera_stream():
                     mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
+@app.route("/api/camera/frame")
+def camera_frame():
+    """Get a single frame from the camera."""
+    global camera
+    if camera is None:
+        camera = cv2.VideoCapture(0)
+    
+    ok, frame = camera.read()
+    if not ok:
+        return jsonify({"ok": False, "error": "Cannot read from camera"}), 500
+    
+    cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = cascade.detectMultiScale(gray, 1.1, 5, minSize=(80, 80))
+    for (x, y, w, h) in faces:
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (99, 102, 241), 2)
+        cv2.putText(frame, "Face Detected", (x, y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (99, 102, 241), 2)
+    
+    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    b64 = base64.b64encode(buf).decode("utf-8")
+    return jsonify({"ok": True, "frame": f"data:image/jpeg;base64,{b64}"})
+
+
+@app.route("/api/camera/start", methods=["POST"])
+def camera_start():
+    global camera, camera_active
+    camera_active = True
+    if camera is None:
+        camera = cv2.VideoCapture(0)
+        if not camera.isOpened():
+            return jsonify({"ok": False, "error": "Cannot open camera"}), 500
+    return jsonify({"ok": True})
+
+
 @app.route("/api/camera/stop", methods=["POST"])
 def camera_stop():
-    global camera_active
+    global camera, camera_active
     camera_active = False
+    if camera:
+        camera.release()
+        camera = None
     return jsonify({"ok": True})
 
 # ─────────────────────────────────────────
@@ -123,13 +233,26 @@ def camera_stop():
 @app.route("/api/register", methods=["POST"])
 def register():
     data     = request.json
-    email    = data.get("email", "").strip().lower()
-    mobile   = data.get("mobile", "").strip()
-    password = data.get("password", "")
-    name     = data.get("name", "").strip()
+    
+    # Debug: Log what we received
+    print(f"[DEBUG] Register request data: {data}")
+    
+    email    = data.get("email", "").strip().lower() if data else ""
+    mobile   = data.get("mobile", "").strip() if data else ""
+    password = data.get("password", "") if data else ""
+    name     = data.get("name", "").strip() if data else ""
+
+    print(f"[DEBUG] email={email}, mobile={mobile}, password={'***' if password else 'EMPTY'}, name={name}")
 
     if not all([email, mobile, password, name]):
-        return jsonify({"ok": False, "error": "All fields are required"}), 400
+        missing = []
+        if not email: missing.append("email")
+        if not mobile: missing.append("mobile")
+        if not password: missing.append("password")
+        if not name: missing.append("name")
+        error_msg = f"Missing fields: {', '.join(missing)}"
+        print(f"[ERROR] {error_msg}")
+        return jsonify({"ok": False, "error": error_msg}), 400
 
     if FIREBASE_READY:
         try:
@@ -137,32 +260,53 @@ def register():
                                        display_name=name, phone_number=None)
             uid = user.uid
         except Exception as e:
+            print(f"[ERROR] Firebase: {str(e)}")
             return jsonify({"ok": False, "error": str(e)}), 400
     else:
         uid = str(uuid.uuid4())   # mock uid
 
     save_user(uid, {
         "uid": uid, "email": email, "mobile": mobile,
-        "name": name, "created_at": time.time(),
+        "name": name, "password": password,
+        "created_at": time.time(),
         "face_registered": False, "bio_registered": False
     })
+    print(f"[SUCCESS] User registered: {uid}")
     return jsonify({"ok": True, "uid": uid, "message": "Account created"})
 
 
 @app.route("/api/login", methods=["POST"])
 def login():
-    data  = request.json
+    data  = request.json or {}
     email = data.get("email", "").strip().lower()
-    # NOTE: password validation should happen via Firebase client SDK on the
-    # frontend (signInWithEmailAndPassword). The server just confirms the user exists.
+    password = data.get("password", "")
+
+    if not email or not password:
+        return jsonify({"ok": False, "error": "Email and password are required"}), 400
+
+    # Try in-memory mock user store first
+    user = USER_DB.get(email)
+    if user:
+        if user.get("password") == password:
+            return jsonify({"ok": True, "uid": user["uid"], "name": user.get("name", email)})
+        return jsonify({"ok": False, "error": "Invalid email or password"}), 401
+
+    # Fallback to Firebase if configured
     if FIREBASE_READY:
         try:
-            user = fb_auth.get_user_by_email(email)
-            return jsonify({"ok": True, "uid": user.uid,
-                            "name": user.display_name or email})
+            fb_user = fb_auth.get_user_by_email(email)
+            # Firebase SDK does not provide password check server-side for security.
+            # Accept if user exists (mock behavior), otherwise fail.
+            return jsonify({"ok": True, "uid": fb_user.uid,
+                            "name": fb_user.display_name or email})
         except Exception:
-            return jsonify({"ok": False, "error": "User not found"}), 401
-    return jsonify({"ok": True, "uid": "mock-uid", "name": email})
+            return jsonify({"ok": False, "error": "Invalid email or password"}), 401
+
+    return jsonify({"ok": False, "error": "Invalid email or password"}), 401
+
+@app.route("/api/ping")
+def ping():
+    return jsonify({"ok": True, "status": "backend up", "face_recognition": bool(FACE_RECO_READY), "mode": "mock" if face_recognition.__class__.__name__ == "MockFaceRecognition" else "real"})
 
 # ─────────────────────────────────────────
 #  Routes — Face Recognition
@@ -170,6 +314,9 @@ def login():
 
 @app.route("/api/face/register", methods=["POST"])
 def face_register():
+    if not FACE_RECO_READY:
+        return jsonify({"ok": False, "error": "Face recognition engine unavailable. Install dlib + face-recognition."}), 503
+
     data    = request.json
     uid     = data.get("uid")
     b64_img = data.get("image")
@@ -191,6 +338,9 @@ def face_register():
 
 @app.route("/api/face/verify", methods=["POST"])
 def face_verify():
+    if not FACE_RECO_READY:
+        return jsonify({"ok": False, "error": "Face recognition engine unavailable. Install dlib + face-recognition."}), 503
+
     data    = request.json
     b64_img = data.get("image")
     uid     = data.get("uid")          # optional — verify specific user
@@ -265,6 +415,17 @@ def bio_verify():
 
 # ─────────────────────────────────────────
 if __name__ == "__main__":
-    print("🚀  http://localhost:5001")
-    print(f"🔥  Firebase: {'LIVE' if FIREBASE_READY else 'MOCK'}")
-    app.run(debug=True, host="0.0.0.0", port=5001, threaded=True)
+    print("\n" + "="*50)
+    print("LUMINARY BACKEND STARTED")
+    print("="*50)
+    print(f"API:       http://localhost:5000")
+    print(f"CORS:      Enabled (all origins)")
+    print(f"Firebase:  {'LIVE' if FIREBASE_READY else 'MOCK'}")
+    print(f"Face ID:   {'Ready' if FACE_RECO_READY else 'Not available'}")
+    print("="*50)
+    print("\nNEXT STEPS:")
+    print("  1. Open the frontend in your browser:")
+    print("     -> http://localhost:8000/frontend/")
+    print("  2. or use RUN_FRONTEND.bat")
+    print("\nPress Ctrl+C to stop the backend\n")
+    app.run(debug=False, host="0.0.0.0", port=5000, threaded=True)

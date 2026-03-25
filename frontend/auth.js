@@ -7,6 +7,48 @@
 
 // ── Backend base URL ──────────────────────────────────
 const API = "http://localhost:5000/api";
+let backendConnected = false;
+
+// Check backend connectivity on page load
+async function checkBackendConnection() {
+  try {
+    const res = await fetch("http://localhost:5000/api/ping", { timeout: 3000 });
+    if (res.ok) {
+      const data = await res.json();
+      backendConnected = data.ok === true;
+      return { connected: backendConnected, data };
+    }
+    backendConnected = false;
+    return { connected: false, data: null };
+  } catch (e) {
+    backendConnected = false;
+    return { connected: false, data: null };
+  }
+}
+
+window.addEventListener("DOMContentLoaded", async () => {
+  const { connected, data } = await checkBackendConnection();
+  
+  if (!connected) {
+    const banner = document.createElement("div");
+    banner.style.cssText = `
+      position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+      background: linear-gradient(135deg, #f87171, #fb923c);
+      color: white; padding: 16px 20px; text-align: center;
+      font-weight: 500; font-size: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    `;
+    banner.innerHTML = `
+      ⚠️ <strong>Backend not running.</strong> 
+      Double-click <code style="background:rgba(0,0,0,0.2); padding:4px 8px; border-radius:4px;">START.bat</code> 
+      or run: <code style="background:rgba(0,0,0,0.2); padding:4px 8px; border-radius:4px;">python start.py</code>
+    `;
+    document.body.insertBefore(banner, document.body.firstChild);
+    document.body.style.paddingTop = "60px";
+  } else if (data && !data.face_recognition) {
+    // Backend running but face recognition not available (that's OK)
+    console.log("✅ Backend running in mock mode (face recognition not available)");
+  }
+});
 
 // ── App state ─────────────────────────────────────────
 let currentUid    = null;
@@ -14,6 +56,7 @@ let faceMode      = "verify";    // "register" | "verify"
 let bioMode       = "verify";    // "register" | "verify"
 let cameraActive  = false;
 let captureOnce   = false;
+let cameraLoop    = null;
 
 /* ═══════════════════════════════════════════
    UTILS
@@ -44,10 +87,25 @@ async function apiPost(path, body) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10000)
     });
+    
+    if (!res.ok) {
+      console.error(`API Error: ${res.status}`, await res.text());
+      return { 
+        ok: false, 
+        error: `Server error (HTTP ${res.status})` 
+      };
+    }
+    
     return await res.json();
-  } catch {
-    return { ok: false, error: "Cannot reach backend. Is app.py running on port 5000?" };
+  } catch (e) {
+    backendConnected = false;
+    console.error("Backend connection failed:", e);
+    return { 
+      ok: false, 
+      error: "❌ Backend offline. Refresh page and try again." 
+    };
   }
 }
 
@@ -88,12 +146,23 @@ async function doLogin() {
 
   if (!email || !pass) { toast("Please fill in both fields.", "err"); return; }
 
-  const res = await apiPost("/login", { email, password: pass });
+  const payload = { email, password: pass };
+  const saved = JSON.parse(window.localStorage.getItem("luminary_user") || "null");
+
+  // Prefer local fallback password match for quick demo behavior
+  if (saved && saved.email === email && saved.password === pass) {
+    currentUid = saved.uid;
+    toast(`Welcome back, ${saved.name || email}! ✓`);
+    return;
+  }
+
+  const res = await apiPost("/login", payload);
   if (res.ok) {
     currentUid = res.uid;
     toast(`Welcome back, ${res.name || email}! ✓`);
   } else {
     toast(res.error || "Login failed.", "err");
+    setStatus("faceStatus", "No match. Use Forgot Password via Face ID.", "err");
   }
 }
 
@@ -124,6 +193,13 @@ async function doRegister() {
   const res = await apiPost("/register", { name, email, mobile, password: pass });
   if (res.ok) {
     currentUid = res.uid;
+    // Save local credentials for quick login + recovery flow
+    window.localStorage.setItem("luminary_user", JSON.stringify({
+      uid: currentUid,
+      name,
+      email,
+      password: pass
+    }));
     toast(`Account created! ✓`);
     switchTab("login");
   } else {
@@ -176,6 +252,11 @@ function resetModalState() {
 function openForgot() {
   faceMode = "verify";
   bioMode  = "verify";
+  const saved = JSON.parse(window.localStorage.getItem("luminary_user") || "null");
+  if (saved && !currentUid) {
+    currentUid = saved.uid;
+  }
+
   document.getElementById("faceTitle").textContent = "Face Verification";
   document.getElementById("faceDesc").textContent  =
     "Position your face in the frame. The OpenCV backend will verify you.";
@@ -239,28 +320,93 @@ function handleCamBtn() {
   }
 }
 
-function startStream() {
-  const streamImg = document.getElementById("streamImg");
+async function startStream() {
   const camBox    = document.getElementById("camBox");
   const camBtn    = document.getElementById("camBtn");
+  const canvas    = document.getElementById("streamCanvas");
+  const ctx       = canvas.getContext("2d");
 
-  // Point the <img> at the Flask MJPEG stream
-  streamImg.src = `${API.replace("/api", "")}/api/camera/stream?t=${Date.now()}`;
-
-  streamImg.onerror = () => {
+  if (!backendConnected) {
     setStatus("faceStatus",
-      "⚠ Cannot connect to camera stream. Make sure app.py is running.", "err");
-    camBox.classList.remove("cam-live");
+      "❌ Backend offline. Refresh page after starting backend.", "err");
     camBtn.textContent = "Start Camera";
-    camBtn.disabled    = false;
-    cameraActive = false;
-  };
+    camBtn.disabled = false;
+    return;
+  }
 
-  camBox.classList.add("cam-live");
   cameraActive = true;
+  camBox.classList.add("cam-live");
   camBtn.textContent = "📸 Capture & Verify";
   camBtn.disabled    = false;
-  setStatus("faceStatus", "Camera active — position your face then tap Capture.", "");
+  setStatus("faceStatus", "📹 Camera active — position your face then tap Capture.", "");
+
+  // Set canvas size
+  canvas.width  = 640;
+  canvas.height = 480;
+
+  // Start polling for frames
+  const pollFrame = async () => {
+    if (!cameraActive) return;
+    
+    try {
+      const res = await fetch(`${API}/camera/frame`, { 
+        signal: AbortSignal.timeout(5000) 
+      });
+      
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      
+      const data = await res.json();
+      if (data.ok && data.frame) {
+        const img = new Image();
+        img.onload = () => {
+          ctx.drawImage(img, 0, 0);
+          cameraLoop = setTimeout(pollFrame, 100);
+        };
+        img.onerror = () => {
+          cameraLoop = setTimeout(pollFrame, 100);
+        };
+        img.src = data.frame;
+      } else {
+        cameraLoop = setTimeout(pollFrame, 100);
+      }
+    } catch (e) {
+      console.error("Camera frame error:", e);
+      setStatus("faceStatus",
+        "❌ Camera error. Refresh page and try again.", "err");
+      camBox.classList.remove("cam-live");
+      camBtn.textContent = "Start Camera";
+      camBtn.disabled    = false;
+      cameraActive = false;
+    }
+  };
+
+  // Call backend to start camera
+  fetch(`${API}/camera/start`, { 
+    method: "POST",
+    signal: AbortSignal.timeout(5000)
+  })
+    .then(res => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    })
+    .then(data => {
+      if (data.ok) {
+        backendConnected = true;
+        pollFrame();
+      } else {
+        setStatus("faceStatus",
+          "❌ " + (data.error || "Camera unavailable"), "err");
+        cameraActive = false;
+      }
+    })
+    .catch(e => {
+      backendConnected = false;
+      setStatus("faceStatus",
+        "❌ Backend offline. Refresh page and try again.", "err");
+      cameraActive = false;
+    });
 }
 
 async function captureAndProcess() {
@@ -272,19 +418,17 @@ async function captureAndProcess() {
   camBtn.disabled    = true;
   showLoader("faceStatus");
 
-  // Snapshot the MJPEG frame via canvas
-  const streamImg = document.getElementById("streamImg");
-  const canvas    = document.createElement("canvas");
-  canvas.width    = streamImg.naturalWidth  || 640;
-  canvas.height   = streamImg.naturalHeight || 480;
-  canvas.getContext("2d").drawImage(streamImg, 0, 0);
+  // Capture canvas to base64
+  const canvas = document.getElementById("streamCanvas");
   const b64 = canvas.toDataURL("image/jpeg", 0.85);
 
   stopCamera();
 
+  let res;
+
   if (faceMode === "register") {
     // ── Register face ──
-    const res = await apiPost("/face/register", { uid: currentUid, image: b64 });
+    res = await apiPost("/face/register", { uid: currentUid, image: b64 });
     if (res.ok) {
       setStatus("faceStatus", "✔ Face registered successfully!", "ok");
       markBadgeDone("faceBadge");
@@ -293,14 +437,14 @@ async function captureAndProcess() {
       setStatus("faceStatus", "✘ " + res.error, "err");
       retryCamera(camBtn);
     }
-
   } else {
     // ── Verify face ──
     const body = { image: b64 };
     if (currentUid) body.uid = currentUid;
-    const res = await apiPost("/face/verify", body);
+    res = await apiPost("/face/verify", body);
     if (res.ok) {
       setStatus("faceStatus", `✔ Face matched — ${res.confidence}% confidence`, "ok");
+      toast("Welcome back! Face unlock successful. You can now change your password.");
       setTimeout(() => showSuccess("Face verified. You can now reset your password."), 1000);
     } else {
       setStatus("faceStatus", "✘ " + res.error, "err");
@@ -308,6 +452,7 @@ async function captureAndProcess() {
     }
   }
 }
+
 
 function retryCamera(btn) {
   captureOnce  = false;
@@ -318,9 +463,12 @@ function retryCamera(btn) {
 
 async function stopCamera() {
   if (cameraActive) {
-    document.getElementById("streamImg").src = "";
-    document.getElementById("camBox").classList.remove("cam-live");
     cameraActive = false;
+    if (cameraLoop) {
+      clearTimeout(cameraLoop);
+      cameraLoop = null;
+    }
+    document.getElementById("camBox").classList.remove("cam-live");
     await fetch(`${API}/camera/stop`, { method: "POST" }).catch(() => {});
   }
 }
